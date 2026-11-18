@@ -2,7 +2,7 @@
 import type { ExtensionCommandContext, ExtensionContext, AuthStorage as HostAuthStorage } from "@oh-my-pi/pi-coding-agent";
 import { getBundledModels, type GeneratedProvider } from "@oh-my-pi/pi-catalog";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
-import type { GoogleQuotaAccountSnapshot, CodexUsageSnapshot } from "./quota.ts";
+import type { GoogleQuotaAccountSnapshot, CodexUsageSnapshot, OpenCodeGoUsageSnapshot } from "./quota.ts";
 
 export function getModels(providerId: string): Model<Api>[] {
 	return getBundledModels(providerId as GeneratedProvider) as Model<Api>[];
@@ -155,7 +155,8 @@ export function adaptAuthStorage(raw: unknown): MultiAuthStorage {
 			if (typeof prop === "string" && prop in adapter) {
 				return adapter[prop];
 			}
-			const value = Reflect.get(base, prop, receiver);
+			// Receiver stays `base`: host getters (e.g. `keys`) read private fields and throw on the proxy.
+			const value = Reflect.get(base, prop);
 			if (typeof value === "function") {
 				return value.bind(base);
 			}
@@ -183,6 +184,7 @@ export interface QuotaCheckResult {
 	score: number;
 	googleSnapshot?: GoogleQuotaAccountSnapshot;
 	codexSnapshot?: CodexUsageSnapshot;
+	opencodeGoSnapshot?: OpenCodeGoUsageSnapshot;
 }
 
 export interface ProviderQuotaChecker {
