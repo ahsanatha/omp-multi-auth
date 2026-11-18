@@ -188,6 +188,11 @@ export function getGitHubCopilotBaseUrl(token: string | undefined, enterpriseUrl
 // transport and puts subscription identity back on emitted assistant messages.
 export const SUB_TRANSPORT_CONFIG: Record<string, { builtinApi: Api | ((modelId: string) => Api); customApiId: string }> = {
 	"google-antigravity": { builtinApi: "google-gemini-cli", customApiId: "google-antigravity-mp" },
+	// pi-ai keys X-Api-Key (anthropic-messages) and x-opencode-session on provider === "opencode-go".
+	"opencode-go": {
+		builtinApi: (modelId) => getModels("opencode-go").find(m => m.id === modelId)?.api ?? "openai-completions",
+		customApiId: "opencode-go-mp",
+	},
 };
 
 
@@ -303,8 +308,9 @@ interface ApiKeyProviderSpec {
 	placeholder: string; // key-format hint shown in the login prompt
 }
 
-// Direct-API-key providers with a static baseUrl and bearer auth in the bundled
-// catalog. Add a row to support another; no other code changes are required.
+// Direct-API-key providers with a static baseUrl in the bundled catalog. A row
+// is enough for plain bearer auth; providers whose pi-ai auth/headers are keyed
+// on the provider name also need a SUB_TRANSPORT_CONFIG entry.
 export const API_KEY_PROVIDERS: ApiKeyProviderSpec[] = [
 	{ id: "openai", displayName: "OpenAI (API key)", placeholder: "sk-..." },
 	{ id: "deepseek", displayName: "DeepSeek", placeholder: "sk-..." },
@@ -320,6 +326,7 @@ export const API_KEY_PROVIDERS: ApiKeyProviderSpec[] = [
 	{ id: "zai", displayName: "Z.AI (GLM)", placeholder: "..." },
 	{ id: "minimax", displayName: "MiniMax (Global)", placeholder: "..." },
 	{ id: "minimax-cn", displayName: "MiniMax (China)", placeholder: "..." },
+	{ id: "opencode-go", displayName: "OpenCode Go", placeholder: "oc_sk_..." },
 ];
 
 export const PROVIDER_TEMPLATES: Record<string, ProviderTemplate> = {

@@ -96,6 +96,7 @@ Create `.omp/multi-auth.json` in a project to restrict which subscription provid
 | `zai` | Z.AI (GLM) |
 | `minimax` | MiniMax (Global) |
 | `minimax-cn` | MiniMax (China) |
+| `opencode-go` | OpenCode Go |
 | `cursor` | Cursor (dashboard API key `crsr_...` / `cursor_...` or browser sign-in) |
 
 API-key providers support full multi-account operation. Add an account with `/multi-auth add`, select the provider, then authenticate via `/multi-auth login` (or `/login <name>`) and paste your API key when prompted. Each account stores its own key independently in OMP auth storage.
@@ -104,7 +105,9 @@ For `cursor`, `/multi-auth login` prompts for a dashboard API key (`crsr_...`/`c
 
 ## Built-in quotas
 
-Run `/multi-auth limits` to inspect quota and usage information for supported providers. This currently includes built-in quota checks for Codex and Google providers. Results depend on provider availability and authenticated account state.
+Run `/multi-auth limits` to inspect quota and usage information for supported providers. This currently includes built-in quota checks for Codex, Google, and OpenCode Go providers. Results depend on provider availability and authenticated account state.
+
+OpenCode Go reports 5-hour, weekly, and monthly windows. The status line and ready/low/blocked state use the tighter of the 5-hour and weekly windows; the monthly window is shown for reference only, because an exhausted month can still serve requests when the account's "Use balance" fallback is on.
 
 ## Configuration files
 

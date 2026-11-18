@@ -1,6 +1,7 @@
 // ========================================================================
 // Built-in quota checking
 // ========================================================================
+import { randomUUID } from "node:crypto";
 import type { ExtensionCommandContext, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { BorderedLoader } from "@oh-my-pi/pi-coding-agent";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
@@ -44,6 +45,18 @@ export interface CodexUsageSnapshot {
 	email: string;
 	fiveHour?: CodexUsageWindow;
 	weekly?: CodexUsageWindow;
+}
+
+export interface OpenCodeGoUsageWindow {
+	usedPercent: number;
+	resetAt: number; // epoch seconds
+	rateLimited: boolean;
+}
+
+export interface OpenCodeGoUsageSnapshot {
+	rolling: OpenCodeGoUsageWindow;
+	weekly: OpenCodeGoUsageWindow;
+	monthly: OpenCodeGoUsageWindow;
 }
 
 export interface GoogleGeminiQuotaResponse {
@@ -215,13 +228,10 @@ export async function readResponseError(response: Response): Promise<string> {
 	return `HTTP ${response.status}: ${raw}`;
 }
 
-export function classifyCodexQuotaKind(snapshot: CodexUsageSnapshot): {
+export function classifyRemainingBottleneck(values: number[]): {
 	kind: QuotaStatusKind;
 	score: number;
 } {
-	const fiveHourLeft = getCodexWindowRemaining(snapshot.fiveHour);
-	const weeklyLeft = getCodexWindowRemaining(snapshot.weekly);
-	const values = [fiveHourLeft, weeklyLeft].filter((value): value is number => value !== undefined);
 	if (values.length === 0) {
 		return { kind: "error", score: 0 };
 	}
@@ -230,6 +240,16 @@ export function classifyCodexQuotaKind(snapshot: CodexUsageSnapshot): {
 	if (bottleneck <= 15) return { kind: "low", score: bottleneck };
 	if (bottleneck <= 30) return { kind: "watch", score: bottleneck };
 	return { kind: "ready", score: bottleneck };
+}
+
+export function classifyCodexQuotaKind(snapshot: CodexUsageSnapshot): {
+	kind: QuotaStatusKind;
+	score: number;
+} {
+	return classifyRemainingBottleneck(
+		[getCodexWindowRemaining(snapshot.fiveHour), getCodexWindowRemaining(snapshot.weekly)]
+			.filter((value): value is number => value !== undefined),
+	);
 }
 
 export function formatQuotaKind(kind: QuotaStatusKind): string {
@@ -1145,10 +1165,134 @@ export const googleAntigravityQuotaChecker: ProviderQuotaChecker = {
 	},
 };
 
+export const OPENCODE_GO_DEFAULT_BASE_URL = "https://opencode.ai/inference/go";
+// Background poll outside any conversation; the route requires some session id.
+const OPENCODE_GO_USAGE_SESSION = randomUUID();
+
+export function opencodeGoUsageUrl(): string {
+	const base = getModels("opencode-go").find((m) => m.baseUrl)?.baseUrl ?? OPENCODE_GO_DEFAULT_BASE_URL;
+	return `${base.trim().replace(/\/+$/, "").replace(/\/v1$/i, "")}/v1/usage`;
+}
+
+function normalizeOpenCodeGoWindow(raw: unknown): OpenCodeGoUsageWindow | undefined {
+	const w = getRecord(raw);
+	if (!w) return undefined;
+	const { percent, status, resetsAt } = w;
+	if (typeof percent !== "number" || !Number.isFinite(percent) || percent < 0 || percent > 100) return undefined;
+	if (status !== "ok" && status !== "rate-limited") return undefined;
+	const resetAt = typeof resetsAt === "string" ? parseIsoTimestampSeconds(resetsAt) : undefined;
+	if (resetAt === undefined) return undefined;
+	return { usedPercent: percent, resetAt, rateLimited: status === "rate-limited" };
+}
+
+/** All-or-nothing: the route's shape is undocumented, so a partial decode is treated as unusable. */
+export function parseOpenCodeGoUsageSnapshot(data: unknown): OpenCodeGoUsageSnapshot | undefined {
+	const usage = getRecord(getRecord(data)?.usage);
+	const rolling = normalizeOpenCodeGoWindow(usage?.rolling);
+	const weekly = normalizeOpenCodeGoWindow(usage?.weekly);
+	const monthly = normalizeOpenCodeGoWindow(usage?.monthly);
+	return rolling && weekly && monthly ? { rolling, weekly, monthly } : undefined;
+}
+
+function getOpenCodeGoRemaining(window: OpenCodeGoUsageWindow): number {
+	return window.rateLimited ? 0 : Math.max(0, Math.min(100, 100 - window.usedPercent));
+}
+
+/** Rolling and weekly decide status. Monthly is display-only: an exhausted month can still
+ * serve requests when the account's "Use balance" fallback is on, and the route does not report that. */
+export function pickOpenCodeGoBottleneck(snapshot: OpenCodeGoUsageSnapshot): {
+	shortLabel: string;
+	window: OpenCodeGoUsageWindow;
+	remaining: number;
+} {
+	const rolling = getOpenCodeGoRemaining(snapshot.rolling);
+	const weekly = getOpenCodeGoRemaining(snapshot.weekly);
+	return rolling <= weekly
+		? { shortLabel: "5h", window: snapshot.rolling, remaining: rolling }
+		: { shortLabel: "7d", window: snapshot.weekly, remaining: weekly };
+}
+
+export const opencodeGoQuotaChecker: ProviderQuotaChecker = {
+	baseProvider: "opencode-go",
+	async check(account: QuotaAccount, _authStorage: AuthStorage, signal?: AbortSignal): Promise<QuotaCheckResult> {
+		const auth = account.auth;
+		const key = auth?.type === "api_key" && typeof auth.key === "string" ? auth.key : "";
+		const fail = (kind: QuotaStatusKind, summary: string, extra: string[]): QuotaCheckResult => ({
+			account,
+			kind,
+			summary,
+			details: [`account: ${account.displayName}`, `provider: ${account.providerName}`, ...extra],
+			score: 0,
+		});
+		if (!key) {
+			return fail("missing-auth", "not logged in", [
+				"status: not logged in",
+				"login: use /multi-auth login or /login to authenticate this account",
+			]);
+		}
+
+		const url = opencodeGoUsageUrl();
+		try {
+			const response = await fetch(url, {
+				method: "GET",
+				headers: {
+					Accept: "application/json",
+					Authorization: `Bearer ${key}`,
+					"User-Agent": "omp-multi-auth",
+					"x-opencode-session": OPENCODE_GO_USAGE_SESSION,
+				},
+				signal,
+			});
+			if (!response.ok) {
+				const error = await readResponseError(response);
+				return fail("error", error, ["status: error", `details: ${error}`]);
+			}
+			const snapshot = parseOpenCodeGoUsageSnapshot(await response.json());
+			if (!snapshot) {
+				const error = "unexpected usage response";
+				return fail("error", error, ["status: error", `details: ${error}`]);
+			}
+
+			const worst = pickOpenCodeGoBottleneck(snapshot);
+			const { kind, score } = classifyRemainingBottleneck([worst.remaining]);
+			const rollingLeft = getOpenCodeGoRemaining(snapshot.rolling);
+			const weeklyLeft = getOpenCodeGoRemaining(snapshot.weekly);
+			const monthlyLeft = getOpenCodeGoRemaining(snapshot.monthly);
+			const summary = [
+				`5h ${formatRemainingPercent(rollingLeft)} (${formatResetShort(snapshot.rolling.resetAt)})`,
+				`7d ${formatRemainingPercent(weeklyLeft)} (${formatResetShort(snapshot.weekly.resetAt)})`,
+				`month ${formatRemainingPercent(monthlyLeft)} (${formatResetShort(snapshot.monthly.resetAt)})`,
+				formatQuotaKind(kind),
+			].join(" | ");
+			return {
+				account,
+				kind,
+				summary,
+				details: [
+					`account: ${account.displayName}`,
+					`provider: ${account.providerName}`,
+					`status: ${formatQuotaKind(kind)}`,
+					`5-hour window: ${formatRemainingPercent(rollingLeft)} left, resets ${formatResetLong(snapshot.rolling.resetAt)}`,
+					`7-day window: ${formatRemainingPercent(weeklyLeft)} left, resets ${formatResetLong(snapshot.weekly.resetAt)}`,
+					`monthly window: ${formatRemainingPercent(monthlyLeft)} left, resets ${formatResetLong(snapshot.monthly.resetAt)} (display only, not part of status)`,
+					`endpoint: ${url}`,
+				],
+				score,
+				opencodeGoSnapshot: snapshot,
+			};
+		} catch (error: unknown) {
+			if (signal?.aborted || isAbortError(error)) throw error;
+			const message = error instanceof Error ? error.message : String(error);
+			return fail("error", message, ["status: error", `details: ${message}`]);
+		}
+	},
+};
+
 export const PROVIDER_QUOTA_CHECKERS: ProviderQuotaChecker[] = [
 	codexQuotaChecker,
 	googleGeminiCliQuotaChecker,
 	googleAntigravityQuotaChecker,
+	opencodeGoQuotaChecker,
 ];
 
 export async function showQuotaDetails(
@@ -1249,6 +1393,11 @@ export function formatCurrentModelQuota(
 
 		if (windowLabel === undefined || remaining === undefined) return undefined;
 		return `${windowLabel} ${formatRemainingPercent(remaining)} ${formatResetShort(resetAt)}`;
+	}
+
+	if (result.opencodeGoSnapshot) {
+		const worst = pickOpenCodeGoBottleneck(result.opencodeGoSnapshot);
+		return `${worst.shortLabel} ${formatRemainingPercent(worst.remaining)} ${formatResetShort(worst.window.resetAt)}`;
 	}
 
 	return undefined;
