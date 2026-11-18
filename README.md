@@ -78,6 +78,9 @@ Create `.omp/multi-auth.json` in a project to restrict which subscription provid
 | `kimi-code` | Kimi Code |
 | `xai-oauth` | xAI Grok OAuth |
 | `cursor` | Cursor (browser PKCE OAuth or API key) |
+
+Each added Codex account (e.g. `openai-codex-2`) discovers its own model catalog using its own OAuth credentials. Run `omp models refresh` to check for newly available models. Account-specific selectors stay unchanged.
+
 ### API key
 
 | Provider | Service |
