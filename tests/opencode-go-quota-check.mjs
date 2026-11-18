@@ -63,9 +63,10 @@ async function run(status, body, { model = "opencode-go-2/beam-free", extraEnv =
 }
 
 try {
-	const bootstrap = spawnSync("omp", baseArgs, {
+	// Without any key omp refuses to start ("No default model selected"); a dummy env key lets it create agent.db.
+	const bootstrap = spawnSync("omp", [...baseArgs, "--model", "opencode-go/beam-free"], {
 		cwd: root,
-		env,
+		env: { ...env, OPENCODE_API_KEY: "bootstrap-key" },
 		input: '{"id":"bootstrap","type":"get_available_models"}\n',
 		encoding: "utf8",
 		maxBuffer: 64 * 1024 * 1024,
