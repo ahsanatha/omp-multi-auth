@@ -155,7 +155,8 @@ export function adaptAuthStorage(raw: unknown): MultiAuthStorage {
 			if (typeof prop === "string" && prop in adapter) {
 				return adapter[prop];
 			}
-			const value = Reflect.get(base, prop, receiver);
+			// Receiver stays `base`: host getters (e.g. `keys`) read private fields and throw on the proxy.
+			const value = Reflect.get(base, prop);
 			if (typeof value === "function") {
 				return value.bind(base);
 			}

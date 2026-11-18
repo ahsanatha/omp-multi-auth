@@ -1214,9 +1214,13 @@ export function pickOpenCodeGoBottleneck(snapshot: OpenCodeGoUsageSnapshot): {
 
 export const opencodeGoQuotaChecker: ProviderQuotaChecker = {
 	baseProvider: "opencode-go",
-	async check(account: QuotaAccount, _authStorage: AuthStorage, signal?: AbortSignal): Promise<QuotaCheckResult> {
+	async check(account: QuotaAccount, authStorage: AuthStorage, signal?: AbortSignal): Promise<QuotaCheckResult> {
 		const auth = account.auth;
-		const key = auth?.type === "api_key" && typeof auth.key === "string" ? auth.key : "";
+		// The host key cascade also covers env/config/runtime keys and is looked up per provider name,
+		// so clones never inherit the canonical provider's env key. Older hosts lack it: use the stored key.
+		const keys = authStorage.keys as { peek?: (provider: string) => Promise<string | undefined> } | undefined;
+		const key = (await keys?.peek?.(account.providerName))
+			?? (auth?.type === "api_key" && typeof auth.key === "string" ? auth.key : "");
 		const fail = (kind: QuotaStatusKind, summary: string, extra: string[]): QuotaCheckResult => ({
 			account,
 			kind,

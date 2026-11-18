@@ -34,12 +34,12 @@ const resetsAt = new Date(Date.now() + 3 * 3_600_000).toISOString();
 const win = (percent, status = "ok") => ({ status, percent, resetsAt });
 const usage = (rolling, weekly, monthly) => JSON.stringify({ usage: { rolling, weekly, monthly } });
 
-async function run(status, body) {
+async function run(status, body, { model = "opencode-go-2/beam-free", extraEnv = {} } = {}) {
 	rmSync(capturePath, { force: true });
 	const child = spawn(
 		"omp",
-		[...baseArgs, "--model", "opencode-go-2/beam-free", "--extension", extension, "--extension", stubExtension],
-		{ cwd: root, env: { ...env, MP_USAGE_STATUS: String(status), MP_USAGE_BODY: body } },
+		[...baseArgs, "--model", model, "--extension", extension, "--extension", stubExtension],
+		{ cwd: root, env: { ...env, ...extraEnv, MP_USAGE_STATUS: String(status), MP_USAGE_BODY: body } },
 	);
 	const closed = new Promise((resolve) => child.once("close", resolve));
 	const statuses = [];
@@ -97,6 +97,18 @@ try {
 	assert.deepEqual(shown, [], "partial usage payload must not render");
 	({ shown } = await run(401, JSON.stringify({ error: { message: "Missing API key" } })));
 	assert.deepEqual(shown, [], "401 must not render");
+
+	// A key that exists only in the environment (no stored credential) must still be polled.
+	({ request, shown } = await run(200, usage(win(20), win(60), win(10)), {
+		model: "opencode-go/beam-free",
+		extraEnv: { OPENCODE_API_KEY: "env-key" },
+	}));
+	assert.equal(request.headers.authorization, "Bearer env-key");
+	assert.match(shown.at(-1) ?? "", /^7d 40% /, `env-only key not rendered: ${JSON.stringify(shown)}`);
+
+	// The canonical env key must not leak into a clone that has its own stored key.
+	({ request } = await run(200, usage(win(20), win(60), win(10)), { extraEnv: { OPENCODE_API_KEY: "env-key" } }));
+	assert.equal(request.headers.authorization, "Bearer test-key", "clone must use its own key, not the env key");
 
 	console.log("OpenCode Go quota check passed");
 } finally {
