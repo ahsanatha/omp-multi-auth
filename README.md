@@ -119,6 +119,20 @@ OpenCode Go reports 5-hour, weekly, and monthly windows. The status line and rea
 | Global | `~/.omp/agent/multi-auth.json` | Subscriptions and presets |
 | Project | `.omp/multi-auth.json` | `allowedSubs` allow-list |
 
+### Proxy or gateway endpoints
+
+An added account uses the `baseUrl` and `headers` that `~/.omp/agent/models.yml` sets for its base provider, so every account of a provider goes through the same endpoint. Each account still signs in with its own credential.
+
+```yaml
+providers:
+  anthropic:
+    baseUrl: http://127.0.0.1:8080/anthropic
+    headers:
+      x-proxy-key: example
+```
+
+With this file, `anthropic-2` and `anthropic-3` send their requests to `http://127.0.0.1:8080/anthropic` with `x-proxy-key` too. Codex accounts (`openai-codex-N`) are not covered yet. omp reads the file when it starts, so restart omp after you change it.
+
 ## Credits
 
 Originally based on [`pi-multi-pass`](https://github.com/hjanuschka/pi-multi-pass).

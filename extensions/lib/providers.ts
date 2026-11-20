@@ -1,7 +1,10 @@
 // ========================================================================
 // Provider templates
 // ========================================================================
-import type { ExtensionAPI, ProviderConfig, ProviderModelConfig } from "@oh-my-pi/pi-coding-agent";
+import { YAML } from "bun";
+import { readFileSync } from "fs";
+import { join } from "path";
+import { getAgentDir, type ExtensionAPI, type ProviderConfig, type ProviderModelConfig } from "@oh-my-pi/pi-coding-agent";
 import { getProviderDefinition } from "@oh-my-pi/pi-ai/registry";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/oauth";
 import { AssistantMessageEventStream, streamSimple, type Api, type AssistantMessageEvent, type Context, type Model, type SimpleStreamOptions } from "@oh-my-pi/pi-ai";
@@ -487,6 +490,25 @@ function registerCodexSub(pi: ExtensionAPI, name: string, index: number, oauth: 
 	});
 }
 
+// An account takes the endpoint its base provider is configured with in
+// models.yml (a gateway or proxy baseUrl and its headers), because
+// models.yml overrides are keyed by provider id and never reach the
+// `<provider>-N` ids registered here. Credentials stay the account's own.
+function baseProviderTransport(provider: string): { baseUrl?: string; headers?: Record<string, string> } {
+	let parsed: { providers?: Record<string, { baseUrl?: unknown; headers?: unknown }> } | null;
+	try {
+		parsed = YAML.parse(readFileSync(join(getAgentDir(), "models.yml"), "utf8")) as typeof parsed;
+	} catch {
+		return {};
+	}
+	const override = parsed?.providers?.[provider];
+	const headers = override?.headers;
+	return {
+		baseUrl: typeof override?.baseUrl === "string" ? override.baseUrl : undefined,
+		headers: headers && typeof headers === "object" ? { ...(headers as Record<string, string>) } : undefined,
+	};
+}
+
 export function registerSub(pi: ExtensionAPI, entry: SubEntry): void {
 	const template = PROVIDER_TEMPLATES[entry.provider];
 	if (!template) return;
@@ -501,12 +523,14 @@ export function registerSub(pi: ExtensionAPI, entry: SubEntry): void {
 	const builtinModels = getModels(entry.provider);
 	const transportApi = SUB_TRANSPORT_CONFIG[entry.provider]?.customApiId;
 	const streamSimple = getSubscriptionStream(entry.provider);
-	const baseUrl = builtinModels[0]?.baseUrl || "";
+	const transport = baseProviderTransport(entry.provider);
+	const baseUrl = transport.baseUrl ?? (builtinModels[0]?.baseUrl || "");
 	const models = cloneModels(entry.provider, entry.index);
 
 	// Static `models` provide startup catalog for this subscription.
 	pi.registerProvider(name, {
 		baseUrl,
+		headers: transport.headers,
 		api: transportApi ?? builtinModels[0]?.api,
 		streamSimple,
 		oauth: oauth && modifyModels ? { ...oauth, modifyModels } : oauth,
