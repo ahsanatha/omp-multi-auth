@@ -27,8 +27,9 @@ jobs:
         run: |
           bun install -g @oh-my-pi/pi-coding-agent@18.22.2
           echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
-      - name: Run OpenCode Go host tests
+      - name: Run host tests
         run: |
           omp --version
           node tests/opencode-go-provider-check.mjs
           node tests/opencode-go-quota-check.mjs
+          node tests/sub-usage-check.mjs

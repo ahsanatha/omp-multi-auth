@@ -1,10 +1,13 @@
 // ========================================================================
 // Provider templates
 // ========================================================================
-import type { ExtensionAPI, ProviderConfig, ProviderModelConfig } from "@oh-my-pi/pi-coding-agent";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
+import { dirname, join } from "path";
+import { getAgentDir, type ExtensionAPI, type ProviderConfig, type ProviderModelConfig } from "@oh-my-pi/pi-coding-agent";
 import { getProviderDefinition } from "@oh-my-pi/pi-ai/registry";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/oauth";
-import { AssistantMessageEventStream, streamSimple, type Api, type AssistantMessageEvent, type Context, type Model, type SimpleStreamOptions } from "@oh-my-pi/pi-ai";
+import { AssistantMessageEventStream, streamSimple, type Api, type AssistantMessageEvent, type Context, type Model, type SimpleStreamOptions, type UsageProvider, type UsageReport } from "@oh-my-pi/pi-ai";
+import { defaultUsageProvider } from "@oh-my-pi/pi-ai/usage/registry";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { fetchCodexModels } from "@oh-my-pi/pi-catalog/discovery/codex";
 import { CODEX_BASE_URL, getCodexAccountId } from "@oh-my-pi/pi-catalog/wire/codex";
@@ -453,11 +456,71 @@ export function cloneModels(originalProvider: string, index: number): ProviderMo
 // Register a single subscription as a provider
 // ==========================================================================
 
+// Matches OMP's own usage report TTL and last-good retention.
+const SUB_USAGE_FRESH_MS = 5 * 60_000;
+const SUB_USAGE_RETAIN_MS = 24 * 60 * 60_000;
+
+// OMP drops every persisted report of a provider whose usage fetcher an extension
+// registers, and each OMP process registers on startup. Without this file every
+// new session re-probes each sub, which trips the upstream /usage rate limit
+// (Anthropic answers 429) and leaves no last-good report to show.
+const SUB_USAGE_FILE = join(getAgentDir(), "cache", "multi-auth-usage.json");
+
+function readSubUsage(): Record<string, UsageReport> {
+	try {
+		return JSON.parse(readFileSync(SUB_USAGE_FILE, "utf8"));
+	} catch {
+		return {};
+	}
+}
+
+function saveSubUsage(key: string, report: UsageReport): void {
+	const now = Date.now();
+	const kept = Object.entries(readSubUsage()).filter(([, saved]) => now - saved.fetchedAt < SUB_USAGE_RETAIN_MS);
+	const { raw: _raw, ...slim } = report;
+	const next = { ...Object.fromEntries(kept), [key]: slim };
+	mkdirSync(dirname(SUB_USAGE_FILE), { recursive: true });
+	const tmp = `${SUB_USAGE_FILE}.${process.pid}.tmp`;
+	writeFileSync(tmp, JSON.stringify(next));
+	renameSync(tmp, SUB_USAGE_FILE);
+}
+
+// Built-in usage fetchers only accept their own provider id, so a sub would get no
+// usage report. Probe as the base provider and relabel the report as the sub.
+function subUsageProvider(baseProvider: string, name: string): UsageProvider | undefined {
+	const base = defaultUsageProvider(baseProvider);
+	if (!base) return undefined;
+	const asSub = (report: UsageReport | null): UsageReport | null =>
+		report && {
+			...report,
+			provider: name,
+			limits: report.limits.map(limit => ({ ...limit, scope: { ...limit.scope, provider: name } })),
+		};
+	const { supports, parseRateLimitHeaders } = base;
+	return {
+		...base,
+		id: name,
+		fetchUsage: async (params, ctx) => {
+			const key = `${name}|${params.accountKey ?? params.credential.accountId ?? params.credential.email ?? ""}`;
+			const saved = readSubUsage()[key];
+			const age = saved ? Date.now() - saved.fetchedAt : Infinity;
+			if (age < SUB_USAGE_FRESH_MS) return saved;
+			const report = asSub(await base.fetchUsage({ ...params, provider: baseProvider }, ctx));
+			if (!report) return age < SUB_USAGE_RETAIN_MS ? saved : null;
+			saveSubUsage(key, report);
+			return report;
+		},
+		supports: supports && (params => supports({ ...params, provider: baseProvider })),
+		parseRateLimitHeaders: parseRateLimitHeaders && ((...args) => asSub(parseRateLimitHeaders(...args))),
+	};
+}
+
 function registerCodexSub(pi: ExtensionAPI, name: string, index: number, oauth: ProviderOAuth): void {
 	pi.registerProvider(name, {
 		baseUrl: CODEX_BASE_URL,
 		api: "openai-codex-responses",
 		oauth,
+		usage: subUsageProvider("openai-codex", name),
 		async fetchDynamicModels(accessToken) {
 			// OMP peeks at this provider's credential without refreshing it.
 			if (!accessToken) {
@@ -510,6 +573,7 @@ export function registerSub(pi: ExtensionAPI, entry: SubEntry): void {
 		api: transportApi ?? builtinModels[0]?.api,
 		streamSimple,
 		oauth: oauth && modifyModels ? { ...oauth, modifyModels } : oauth,
+		usage: subUsageProvider(entry.provider, name),
 		models,
 	});
 }

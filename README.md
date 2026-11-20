@@ -112,6 +112,8 @@ Run `/multi-auth limits` to inspect quota and usage information for supported pr
 
 OpenCode Go reports 5-hour, weekly, and monthly windows. The status line and ready/low/blocked state use the tighter of the 5-hour and weekly windows; the monthly window is shown for reference only, because an exhausted month can still serve requests when the account's "Use balance" fallback is on.
 
+Added accounts also report usage to OMP itself, so `/usage`, `omp usage`, and status lines built on OMP's usage reports show each account (for example `anthropic-2`) next to the base provider. This works for every provider OMP has a usage fetcher for. The last successful report is kept in `~/.omp/agent/cache/multi-auth-usage.json` and shared by every OMP process for 5 minutes, so opening several sessions does not trip the provider's usage rate limit.
+
 ## Configuration files
 
 | Scope | Path | Contents |
