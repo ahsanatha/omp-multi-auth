@@ -121,6 +121,20 @@ Added accounts also report usage to OMP itself, so `/usage`, `omp usage`, and st
 | Global | `~/.omp/agent/multi-auth.json` | Subscriptions and presets |
 | Project | `.omp/multi-auth.json` | `allowedSubs` allow-list |
 
+### Proxy or gateway endpoints
+
+An added account takes the `baseUrl` and `headers` that `~/.omp/agent/models.yml` sets for its base provider, so its requests go through the same gateway as the base account. omp-multi-auth reads `models.yaml` instead only when `models.yml` does not exist, as omp does; it never merges the two files, and `models.json` is not read. Each account still signs in with its own credential. Without a `baseUrl`, an account keeps the provider's built-in endpoints, so a provider with several API dialects (OpenCode Go) still uses the right URL for each model. A `baseUrl` replaces the endpoint for every model of that provider, and for GitHub Copilot accounts it replaces the endpoint derived from the sign-in token.
+
+```yaml
+providers:
+  anthropic:
+    baseUrl: http://127.0.0.1:8080/anthropic
+    headers:
+      x-proxy-key: example
+```
+
+With this file, `anthropic-2` and `anthropic-3` send their requests to `http://127.0.0.1:8080/anthropic` with `x-proxy-key` too. Codex accounts (`openai-codex-N`) are not covered yet. omp reads the file when it starts, so restart omp after you change it.
+
 ## Credits
 
 Originally based on [`pi-multi-pass`](https://github.com/hjanuschka/pi-multi-pass).
