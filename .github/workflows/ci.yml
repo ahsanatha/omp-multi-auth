@@ -32,3 +32,5 @@ jobs:
           omp --version
           node tests/opencode-go-provider-check.mjs
           node tests/opencode-go-quota-check.mjs
+      - name: Run base transport host test
+        run: node tests/base-transport-check.mjs
