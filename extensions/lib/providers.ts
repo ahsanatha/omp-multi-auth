@@ -2,7 +2,7 @@
 // Provider templates
 // ========================================================================
 import { YAML } from "bun";
-import { readFileSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { getAgentDir, type ExtensionAPI, type ProviderConfig, type ProviderModelConfig } from "@oh-my-pi/pi-coding-agent";
 import { getProviderDefinition } from "@oh-my-pi/pi-ai/registry";
@@ -252,12 +252,25 @@ export function restoreSubscriptionProvider(event: AssistantMessageEvent, provid
 	return { ...event, partial: { ...event.partial, provider } };
 }
 
-export function createSubscriptionStream(canonicalProvider: string, builtinApi: Api | ((modelId: string) => Api)): SubscriptionStream {
+export function createSubscriptionStream(
+	canonicalProvider: string,
+	builtinApi: Api | ((modelId: string) => Api),
+	baseUrl?: string,
+): SubscriptionStream {
 	return (model, context, options) => {
 		const internalApi = typeof builtinApi === "function" ? builtinApi(model.id) : builtinApi;
 		const baseModel = getModels(canonicalProvider).find(candidate => candidate.id === model.id);
 		if (!baseModel) throw new Error(`Missing bundled model ${canonicalProvider}/${model.id}`);
-		const internalModel = { ...baseModel, api: internalApi, provider: canonicalProvider } as Model<Api>;
+		// The host resolves model.resolveHeaders into model.headers before dispatching here, so the clone's
+		// headers must ride along. Without an explicit baseUrl keep the catalog's per-model URL (mixed dialects).
+		const internalModel = {
+			...baseModel,
+			api: internalApi,
+			provider: canonicalProvider,
+			baseUrl: baseUrl ?? baseModel.baseUrl,
+			headers: model.headers ?? baseModel.headers,
+			resolveHeaders: model.resolveHeaders,
+		} as Model<Api>;
 		const internalOptions: SimpleStreamOptions = {
 			...(options ?? {}),
 			headers: options?.headers,
@@ -289,9 +302,10 @@ export function createSubscriptionStream(canonicalProvider: string, builtinApi: 
 	};
 }
 export const SUBSCRIPTION_STREAMS: Record<string, SubscriptionStream> = {};
-export function getSubscriptionStream(baseProvider: string): SubscriptionStream | undefined {
+export function getSubscriptionStream(baseProvider: string, baseUrl?: string): SubscriptionStream | undefined {
 	const config = SUB_TRANSPORT_CONFIG[baseProvider];
 	if (!config) return undefined;
+	if (baseUrl) return createSubscriptionStream(baseProvider, config.builtinApi, baseUrl);
 	let stream = SUBSCRIPTION_STREAMS[baseProvider];
 	if (!stream) {
 		stream = createSubscriptionStream(baseProvider, config.builtinApi);
@@ -496,8 +510,10 @@ function registerCodexSub(pi: ExtensionAPI, name: string, index: number, oauth: 
 // `<provider>-N` ids registered here. Credentials stay the account's own.
 function baseProviderTransport(provider: string): { baseUrl?: string; headers?: Record<string, string> } {
 	let parsed: { providers?: Record<string, { baseUrl?: unknown; headers?: unknown }> } | null;
+	// Same lookup as the host: models.yaml is read only when models.yml is absent.
+	const yml = join(getAgentDir(), "models.yml");
 	try {
-		parsed = YAML.parse(readFileSync(join(getAgentDir(), "models.yml"), "utf8")) as typeof parsed;
+		parsed = YAML.parse(readFileSync(existsSync(yml) ? yml : join(getAgentDir(), "models.yaml"), "utf8")) as typeof parsed;
 	} catch {
 		return {};
 	}
@@ -518,12 +534,13 @@ export function registerSub(pi: ExtensionAPI, entry: SubEntry): void {
 		registerCodexSub(pi, name, entry.index, oauth);
 		return;
 	}
-	const modifyModels = template.buildModifyModels?.(name);
+	const transport = baseProviderTransport(entry.provider);
+	// An explicit baseUrl wins over the token-derived Copilot endpoint.
+	const modifyModels = transport.baseUrl ? undefined : template.buildModifyModels?.(name);
 
 	const builtinModels = getModels(entry.provider);
 	const transportApi = SUB_TRANSPORT_CONFIG[entry.provider]?.customApiId;
-	const streamSimple = getSubscriptionStream(entry.provider);
-	const transport = baseProviderTransport(entry.provider);
+	const streamSimple = getSubscriptionStream(entry.provider, transport.baseUrl);
 	const baseUrl = transport.baseUrl ?? (builtinModels[0]?.baseUrl || "");
 	const models = cloneModels(entry.provider, entry.index);
 

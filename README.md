@@ -121,7 +121,7 @@ OpenCode Go reports 5-hour, weekly, and monthly windows. The status line and rea
 
 ### Proxy or gateway endpoints
 
-An added account uses the `baseUrl` and `headers` that `~/.omp/agent/models.yml` sets for its base provider, so every account of a provider goes through the same endpoint. Each account still signs in with its own credential.
+An added account takes the `baseUrl` and `headers` that `~/.omp/agent/models.yml` sets for its base provider, so its requests go through the same gateway as the base account. omp-multi-auth reads `models.yaml` instead only when `models.yml` does not exist, as omp does; it never merges the two files, and `models.json` is not read. Each account still signs in with its own credential. Without a `baseUrl`, an account keeps the provider's built-in endpoints, so a provider with several API dialects (OpenCode Go) still uses the right URL for each model. A `baseUrl` replaces the endpoint for every model of that provider, and for GitHub Copilot accounts it replaces the endpoint derived from the sign-in token.
 
 ```yaml
 providers:
